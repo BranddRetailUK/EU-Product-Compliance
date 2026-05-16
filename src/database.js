@@ -212,6 +212,62 @@ export async function listScanResults(shop, limit = 25) {
   }));
 }
 
+export async function getFixedProductUsage(shop, productIds = []) {
+  const normalizedShop = normalizeShop(shop);
+  const db = await ensureDatabase();
+  const countResult = await db.query(
+    `SELECT count(*)::int AS fixed_products
+       FROM product_fix_usage
+      WHERE shop = $1`,
+    [normalizedShop]
+  );
+  const ids = [...new Set(productIds)].filter(Boolean);
+  let alreadyFixedProductIds = [];
+
+  if (ids.length > 0) {
+    const fixedResult = await db.query(
+      `SELECT product_id
+         FROM product_fix_usage
+        WHERE shop = $1
+          AND product_id = ANY($2::text[])`,
+      [normalizedShop, ids]
+    );
+
+    alreadyFixedProductIds = fixedResult.rows.map((row) => row.product_id);
+  }
+
+  return {
+    fixedProducts: countResult.rows[0]?.fixed_products || 0,
+    alreadyFixedProductIds
+  };
+}
+
+export async function recordFixedProducts(shop, productIds) {
+  const normalizedShop = normalizeShop(shop);
+  const ids = [...new Set(productIds)].filter(Boolean);
+
+  if (ids.length === 0) {
+    return;
+  }
+
+  const db = await ensureDatabase();
+
+  for (const productId of ids) {
+    await db.query(
+      `INSERT INTO product_fix_usage (
+          shop,
+          product_id,
+          first_fixed_at,
+          last_fixed_at
+        )
+        VALUES ($1, $2, now(), now())
+        ON CONFLICT (shop, product_id)
+        DO UPDATE SET last_fixed_at = now()`,
+      [normalizedShop, productId]
+    );
+  }
+}
+
 function emptySummary() {
   return {
     scanned_products: 0,
@@ -257,6 +313,21 @@ async function initializeSchema() {
   await db.query(`
     CREATE INDEX IF NOT EXISTS product_scan_results_shop_scanned_at_idx
       ON product_scan_results (shop, scanned_at DESC)
+  `);
+
+  await db.query(`
+    CREATE TABLE IF NOT EXISTS product_fix_usage (
+      shop text NOT NULL REFERENCES shop_sessions(shop) ON DELETE CASCADE,
+      product_id text NOT NULL,
+      first_fixed_at timestamptz NOT NULL DEFAULT now(),
+      last_fixed_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (shop, product_id)
+    )
+  `);
+
+  await db.query(`
+    CREATE INDEX IF NOT EXISTS product_fix_usage_shop_last_fixed_at_idx
+      ON product_fix_usage (shop, last_fixed_at DESC)
   `);
 }
 

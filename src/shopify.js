@@ -177,6 +177,47 @@ export async function writeComplianceMetafields(session, scanResults) {
   };
 }
 
+export async function applyProductFixes(session, fixPlan) {
+  const result = {
+    productUpdatesApplied: 0,
+    inventoryItemUpdatesApplied: 0,
+    appliedFixes: fixPlan.appliedFixes || [],
+    skippedFixes: fixPlan.skippedFixes || []
+  };
+  const userErrors = [];
+
+  for (const product of fixPlan.productUpdates || []) {
+    const data = await shopifyGraphql(session, PRODUCT_UPDATE_MUTATION, {
+      product
+    });
+
+    userErrors.push(...(data.productUpdate?.userErrors || []));
+
+    if ((data.productUpdate?.userErrors || []).length === 0) {
+      result.productUpdatesApplied += 1;
+    }
+  }
+
+  for (const update of fixPlan.inventoryItemUpdates || []) {
+    const data = await shopifyGraphql(session, INVENTORY_ITEM_UPDATE_MUTATION, {
+      id: update.id,
+      input: update.input
+    });
+
+    userErrors.push(...(data.inventoryItemUpdate?.userErrors || []));
+
+    if ((data.inventoryItemUpdate?.userErrors || []).length === 0) {
+      result.inventoryItemUpdatesApplied += 1;
+    }
+  }
+
+  if (userErrors.length > 0) {
+    throw new ShopifyApiError("Shopify rejected one or more product fixes.", userErrors, 422);
+  }
+
+  return result;
+}
+
 async function shopifyGraphql(session, query, variables = {}) {
   const response = await fetch(`https://${session.shop}/admin/api/${config.apiVersion}/graphql.json`, {
     method: "POST",
@@ -316,6 +357,34 @@ const METAFIELDS_SET_MUTATION = `
         field
         message
         code
+      }
+    }
+  }
+`;
+
+const PRODUCT_UPDATE_MUTATION = `
+  mutation UpdateProductForCompliance($product: ProductUpdateInput!) {
+    productUpdate(product: $product) {
+      product {
+        id
+      }
+      userErrors {
+        field
+        message
+      }
+    }
+  }
+`;
+
+const INVENTORY_ITEM_UPDATE_MUTATION = `
+  mutation UpdateInventoryItemForCompliance($id: ID!, $input: InventoryItemInput!) {
+    inventoryItemUpdate(id: $id, input: $input) {
+      inventoryItem {
+        id
+      }
+      userErrors {
+        field
+        message
       }
     }
   }

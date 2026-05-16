@@ -11,7 +11,7 @@ The repository is for a Shopify app currently intended to become an EU Product C
 The application currently implements an HTTP server in `src/server.js`.
 
 - `GET /`: Returns the Shopify App Home overview surface. It includes Shopify App Bridge and Polaris CDN scripts, configures the App Bridge API key from `SHOPIFY_API_KEY`, and renders merchant-facing readiness metrics, a Fix issues action box, and recent product reviews with product thumbnails, severity-sorted findings, and expandable issue lists.
-- `GET /products`: Returns the embedded products surface. It reads product data through authenticated backend API routes, displays scanner readiness with product thumbnails, severity-sorted findings, and expandable issue lists, supports Shopify's resource picker, can trigger product scans with a modal scan overlay using eased circular progress and a lightened leading edge, and includes a Fix issues action box for applying product updates after review.
+- `GET /products`: Returns the embedded products surface. It reads product data through authenticated backend API routes, displays scanner readiness with product thumbnails, severity-sorted findings, and expandable issue lists, supports Shopify's resource picker, can trigger product scans with a modal scan overlay using an eased circular progress ring with a lightened leading edge, and includes a Fix issues action box for applying product updates after review.
 - `GET /settings`: Returns the embedded settings surface showing merchant-facing scan coverage and whether AI review is enabled.
 - `GET /health`: Returns JSON health status for hosting checks.
 - `GET /auth`: Validates the `shop` query parameter and redirects valid shops to their Shopify admin apps area. It does not perform OAuth.
@@ -20,7 +20,7 @@ The application currently implements an HTTP server in `src/server.js`.
 - `GET /api/products`: Requires a verified session token and stored shop session, reads products from Shopify Admin GraphQL, and returns products with computed readiness results.
 - `GET /api/scans`: Requires a verified session token and returns saved scanner results from Postgres.
 - `POST /api/scan-products`: Requires a verified session token, reads selected or recent products from Shopify, applies scanner rules, optionally adds AI-assisted advisory recommendations, stores scan results in Postgres, and returns issue results without writing product updates back to Shopify.
-- `POST /api/fix-issues`: Requires a verified session token, reads selected or recent products from Shopify, re-runs scanner rules and optional AI-assisted advisory recommendations, writes compliance metafields back to Shopify products, stores the updated scan results in Postgres, and returns the write result.
+- `POST /api/fix-issues`: Requires a verified session token, reads selected or recent products from Shopify, re-runs scanner rules, builds an automatic product fix plan, enforces the current free-plan product-fix entitlement unless `DEV_BYPASS_BILLING_GATES=true`, applies eligible product and inventory item updates through Shopify Admin GraphQL, re-fetches and re-scans the products, optionally adds AI-assisted advisory recommendations, writes compliance metafields back to Shopify products, stores the updated scan results in Postgres, records fixed product usage, and returns fix, billing, AI, scan, and metafield write results.
 - `POST /webhooks/app/uninstalled`: Verifies the Shopify webhook HMAC and marks the shop session as uninstalled in Postgres.
 - All other routes return a `404` JSON response.
 
@@ -38,9 +38,21 @@ Scanner rules currently inspect products and shipping-required variants for:
 - Missing variant country of origin.
 - Missing variant barcode.
 
-When `OPENAI_API_KEY` is configured, product scans also send compact product and findings data to the OpenAI Responses API using structured JSON output. AI output is treated as advisory: it can append AI-sourced recommendations to findings and add an `aiReview` object to API responses, but the deterministic readiness status and score are still calculated by local scanner rules. The AI review currently uses only the supplied product data and deterministic findings; it does not perform external lookups or automatically infer and write HS codes, country of origin, or other customs values.
+When `OPENAI_API_KEY` is configured, product scans also send compact product and findings data to the OpenAI Responses API using structured JSON output. AI output is treated as advisory: it can append AI-sourced recommendations to findings and add an `aiReview` object to API responses, but the deterministic readiness status and score are still calculated by local scanner rules. When `AI_PRODUCT_FIXES_ENABLED=true`, Fix issues can also request high-confidence AI product fix candidates for missing product type and HS code values using only the supplied product data. AI product fixes do not perform external lookups and do not suggest country of origin, barcodes, SKUs, vendors, or legal conclusions.
 
-Scanner results produce a readiness status of `ready`, `needs_attention`, or `blocked`, plus a numeric score. Findings are ordered by severity from `high` to `medium` to `low`. The Fix issues product update writes use product metafields under the `eu_product_compliance` namespace:
+Scanner results produce a readiness status of `ready`, `needs_attention`, or `blocked`, plus a numeric score. Findings are ordered by severity from `high` to `medium` to `low`.
+
+Fix issues can currently apply these real Shopify product updates:
+
+- Product `vendor` from `DEFAULT_PRODUCT_VENDOR` when the product vendor is missing.
+- Product `productType` from `DEFAULT_PRODUCT_TYPE`, or from a high-confidence AI product type candidate when AI product fixes are enabled.
+- Inventory item `sku` using a generated SKU based on product handle/title, variant title, and variant ID when SKU is missing.
+- Inventory item `countryCodeOfOrigin` from `DEFAULT_COUNTRY_OF_ORIGIN` when country of origin is missing.
+- Inventory item `harmonizedSystemCode` from a high-confidence AI HS code candidate when AI product fixes are enabled.
+
+Fix issues does not currently auto-generate barcodes or change whether variants require shipping. Issues that do not have a safe configured, generated, or high-confidence AI fix are returned as skipped fixes.
+
+Fix issues also writes product metafields under the `eu_product_compliance` namespace:
 
 - `readiness_status`
 - `readiness_score`
@@ -61,11 +73,13 @@ There are currently no background jobs or Shopify extensions implemented.
 - `src/config.js`: Central environment configuration.
 - `src/database.js`: Postgres schema initialization, encrypted shop session storage, uninstall marking, and scanner result persistence.
 - `src/scanner.js`: Product compliance/customs readiness scanner rules, compact Shopify product normalization, thumbnail image extraction, and finding severity sorting.
+- `src/fixes.js`: Builds automatic Shopify product and inventory item fix plans from scan results, configured defaults, generated SKUs, and optional high-confidence AI fix candidates.
 - `src/ai.js`: Optional OpenAI Responses API integration for advisory customs readiness recommendations.
 - `src/security.js`: Shopify session-token verification, webhook HMAC verification, shop-domain validation, and access-token encryption helpers.
 - `src/shopify.js`: Shopify token exchange, Admin GraphQL product reads, and compliance metafield writes.
 - `src/server.js`: Built-in Node HTTP server, App Home renderer, API routes, and webhook route.
 - `test/ai.test.js`: AI enhancement fallback tests.
+- `test/fixes.test.js`: Automatic product fix planning tests.
 - `test/scanner.test.js`: Scanner behavior tests.
 - `test/security.test.js`: Session-token verification tests.
 
@@ -95,8 +109,14 @@ The current HTTP runtime reads:
 - `SESSION_SECRET`: Encrypts stored Shopify offline access tokens.
 - `OPENAI_API_KEY`: Enables optional server-side AI review during product scans.
 - `OPENAI_MODEL`: Selects the OpenAI model for optional AI review and defaults to `gpt-4o-mini`.
+- `AI_PRODUCT_FIXES_ENABLED`: When set to `true`, allows Fix issues to request high-confidence AI candidates for product type and HS code fixes.
+- `DEFAULT_PRODUCT_VENDOR`: Optional vendor value used by Fix issues when a product vendor is missing.
+- `DEFAULT_PRODUCT_TYPE`: Optional product type value used by Fix issues when a product type is missing.
+- `DEFAULT_COUNTRY_OF_ORIGIN`: Optional two-letter country code used by Fix issues when country of origin is missing.
+- `FREE_FIX_PRODUCT_LIMIT`: Number of unique products the current free-plan entitlement allows Fix issues to update. It defaults to `10`.
+- `DEV_BYPASS_BILLING_GATES`: When set to `true`, bypasses current and future billing gates for local/testing use.
 
-The app still defines placeholders for optional Shopify managed billing plan identifiers, but no runtime code consumes those billing values yet.
+The app still defines placeholders for optional Shopify managed billing plan identifiers. The current runtime has a free-plan product-fix entitlement scaffold, but no paid subscription lookup or billing purchase flow is implemented yet.
 
 ## Database Schema
 
@@ -104,6 +124,7 @@ The app initializes these Postgres tables on demand:
 
 - `shop_sessions`: Stores one row per shop, encrypted offline Admin API token, granted scopes, install status, access mode, and timestamps.
 - `product_scan_results`: Stores latest scanner result per shop/product pair, including status, score, findings JSON, product snapshot JSON with available compact product image data, and scan timestamp.
+- `product_fix_usage`: Stores unique products that have had Fix issues apply at least one product or inventory item update, plus first and latest fix timestamps, for current free-plan entitlement checks and future subscription gating.
 
 ## Runtime And Dependencies
 

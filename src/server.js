@@ -1,15 +1,19 @@
 import http from "node:http";
-import { aiScanningConfigured, enhanceScanResultsWithAi, summarizeAiStatus } from "./ai.js";
+import { aiScanningConfigured, enhanceScanResultsWithAi, suggestProductFixesWithAi, summarizeAiStatus } from "./ai.js";
 import { config } from "./config.js";
 import {
   databaseConfigured,
+  getFixedProductUsage,
   getScanSummary,
   listScanResults,
   markShopUninstalled,
+  recordFixedProducts,
   saveScanResults
 } from "./database.js";
+import { buildProductFixPlan } from "./fixes.js";
 import { scanProducts } from "./scanner.js";
 import {
+  applyProductFixes,
   authenticateAdminRequest,
   fetchProducts,
   fetchProductsByIds,
@@ -309,7 +313,6 @@ function renderScanOverlay() {
   return `<div class="scan-overlay" id="scan-overlay" hidden>
     <div class="scan-dialog" role="status" aria-live="polite">
       <div class="scan-orbit" id="scan-orbit" style="--scan-progress: 0deg; --scan-progress-tail: 0deg;">
-        <div class="scan-spinner"></div>
         <div class="scan-core">
           <strong id="scan-progress">0%</strong>
           <span id="scan-message">Preparing scan</span>
@@ -437,7 +440,34 @@ async function handleApi(req, res, url) {
       ? await fetchProductsByIds(auth.session, productIds)
       : (await fetchProducts(auth.session, { first: Number.parseInt(body.limit || "25", 10) })).products;
     const ruleScan = scanProducts(products);
-    const scanResults = await enhanceScanResultsWithAi(ruleScan.results);
+    const aiFixStatus = await suggestProductFixesWithAi(ruleScan.results);
+    const fixPlan = buildProductFixPlan(ruleScan.results, {
+      defaultProductVendor: config.defaultProductVendor,
+      defaultProductType: config.defaultProductType,
+      defaultCountryOfOrigin: config.defaultCountryOfOrigin,
+      aiFixes: aiFixStatus.fixes
+    });
+    const entitlement = await getFixEntitlement(auth.shop, fixPlan.productIds);
+
+    if (!entitlement.allowed) {
+      sendJson(res, 402, {
+        ok: false,
+        error: `Free plan can fix ${entitlement.freeLimit} products. Upgrade is required to fix ${entitlement.requestedNewFixes} more product${entitlement.requestedNewFixes === 1 ? "" : "s"}.`,
+        billing: entitlement
+      });
+      return true;
+    }
+
+    const productFixResult = await applyProductFixes(auth.session, fixPlan);
+    const fixedProductIds = [...new Set(productFixResult.appliedFixes.map((fix) => fix.productId).filter(Boolean))];
+
+    await recordFixedProducts(auth.shop, fixedProductIds);
+
+    const refreshedProducts = fixedProductIds.length > 0 || productIds.length > 0
+      ? await fetchProductsByIds(auth.session, productIds.length > 0 ? productIds : fixedProductIds)
+      : products;
+    const refreshedScan = scanProducts(refreshedProducts);
+    const scanResults = await enhanceScanResultsWithAi(refreshedScan.results);
     const aiStatus = summarizeAiStatus(scanResults);
     const writeResult = scanResults.length > 0
       ? await writeComplianceMetafields(auth.session, scanResults)
@@ -451,10 +481,17 @@ async function handleApi(req, res, url) {
       ok: true,
       shop: auth.shop,
       aiStatus,
-      summary: ruleScan.summary,
+      aiFixStatus: {
+        enabled: aiFixStatus.enabled,
+        status: aiFixStatus.status,
+        fixes: aiFixStatus.fixes.length
+      },
+      billing: entitlement,
+      summary: refreshedScan.summary,
       results: scanResults,
       writeResult,
-      productUpdatesApplied: true
+      fixResult: productFixResult,
+      productUpdatesApplied: productFixResult.appliedFixes.length > 0
     });
     return true;
   }
@@ -588,6 +625,30 @@ function mapSummary(summary) {
     needsAttentionProducts: summary.needs_attention_products || 0,
     blockedProducts: summary.blocked_products || 0,
     lastScanAt: summary.last_scan_at || null
+  };
+}
+
+async function getFixEntitlement(shop, productIds) {
+  const uniqueProductIds = [...new Set(productIds)].filter(Boolean);
+  const usage = await getFixedProductUsage(shop, uniqueProductIds);
+  const alreadyFixed = new Set(usage.alreadyFixedProductIds);
+  const requestedNewFixes = uniqueProductIds.filter((productId) => !alreadyFixed.has(productId)).length;
+  const freeLimit = Math.max(0, Number(config.freeFixProductLimit) || 0);
+  const paid = false;
+  const devBypass = config.devBypassBillingGates;
+  const remainingFreeFixes = Math.max(0, freeLimit - usage.fixedProducts);
+
+  return {
+    plan: devBypass ? "dev" : paid ? "paid" : "free",
+    paid,
+    devBypass,
+    freeLimit,
+    usedFixes: usage.fixedProducts,
+    remainingFreeFixes,
+    requestedProducts: uniqueProductIds.length,
+    requestedNewFixes,
+    alreadyFixedProducts: usage.alreadyFixedProductIds.length,
+    allowed: devBypass || paid || requestedNewFixes <= remainingFreeFixes
   };
 }
 
@@ -1090,27 +1151,6 @@ function appCss() {
       position: absolute;
     }
 
-    .scan-spinner {
-      border-radius: 50%;
-      inset: 0;
-      position: absolute;
-      transform: rotate(var(--scan-progress));
-      transition: transform 720ms cubic-bezier(0.65, 0, 0.35, 1);
-    }
-
-    .scan-spinner::after {
-      background: radial-gradient(circle at 35% 35%, #ffffff 0 12%, #baf8dc 13% 34%, #00a47a 35% 100%);
-      border: 3px solid #fff;
-      border-radius: 50%;
-      box-shadow: 0 2px 12px rgba(0, 128, 96, 0.4);
-      content: "";
-      height: 14px;
-      left: calc(50% - 10px);
-      position: absolute;
-      top: -2px;
-      width: 14px;
-    }
-
     .scan-core {
       align-items: center;
       display: grid;
@@ -1325,7 +1365,7 @@ function clientScript() {
         renderRecentResults(state.recentResults);
         updateFixPanel();
         hideScanOverlay(true, "fix");
-        showToast("Product updates complete for " + state.currentResults.length + " products.");
+        showFixResult(data.fixResult || {});
       } catch (error) {
         hideScanOverlay(false, "fix");
         setStatus(error.message, "critical");
@@ -1657,6 +1697,27 @@ function clientScript() {
       return currentIssueResults()
         .map((result) => result.product?.id || result.productId)
         .filter(Boolean);
+    }
+
+    function showFixResult(fixResult) {
+      const applied = (fixResult.appliedFixes || []).length;
+      const skipped = (fixResult.skippedFixes || []).length;
+
+      if (applied > 0) {
+        const message = "Applied " + applied + " product fix" + (applied === 1 ? "" : "es") + (skipped > 0 ? ". " + skipped + " issue" + (skipped === 1 ? "" : "s") + " still need manual data." : ".");
+        showToast(message);
+
+        if (skipped > 0) {
+          setStatus(message, "warning");
+        }
+
+        return;
+      }
+
+      const message = skipped > 0
+        ? "No automatic fixes were available. " + skipped + " issue" + (skipped === 1 ? "" : "s") + " need manual data or configured defaults."
+        : "No product fixes were needed.";
+      setStatus(message, skipped > 0 ? "warning" : "success");
     }
 
     function statusBadge(status) {
