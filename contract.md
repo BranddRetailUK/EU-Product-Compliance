@@ -11,7 +11,7 @@ The repository is for a Shopify app currently intended to become an EU Product C
 The application currently implements an HTTP server in `src/server.js`.
 
 - `GET /`: Returns the Shopify App Home overview surface. It includes Shopify App Bridge and Polaris CDN scripts, configures the App Bridge API key from `SHOPIFY_API_KEY`, and renders merchant-facing readiness metrics plus recent product reviews.
-- `GET /products`: Returns the embedded products surface. It reads product data through authenticated backend API routes, displays scanner readiness, supports Shopify's resource picker, and can trigger product scans with a modal scan progress overlay.
+- `GET /products`: Returns the embedded products surface. It reads product data through authenticated backend API routes, displays scanner readiness, supports Shopify's resource picker, and can trigger product scans with a modal scan overlay using eased circular progress and a lightened leading edge.
 - `GET /settings`: Returns the embedded settings surface showing merchant-facing scan coverage and whether AI review is enabled.
 - `GET /health`: Returns JSON health status for hosting checks.
 - `GET /auth`: Validates the `shop` query parameter and redirects valid shops to their Shopify admin apps area. It does not perform OAuth.

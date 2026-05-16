@@ -292,7 +292,7 @@ function renderSettingsPage({ shopLabel }) {
 function renderScanOverlay() {
   return `<div class="scan-overlay" id="scan-overlay" hidden>
     <div class="scan-dialog" role="status" aria-live="polite">
-      <div class="scan-orbit" id="scan-orbit" style="--scan-progress: 0deg;">
+      <div class="scan-orbit" id="scan-orbit" style="--scan-progress: 0deg; --scan-progress-tail: 0deg;">
         <div class="scan-spinner"></div>
         <div class="scan-core">
           <strong id="scan-progress">0%</strong>
@@ -565,6 +565,18 @@ function appCss() {
       font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       color: #202223;
       background: #f6f6f7;
+    }
+
+    @property --scan-progress {
+      syntax: "<angle>";
+      inherits: false;
+      initial-value: 0deg;
+    }
+
+    @property --scan-progress-tail {
+      syntax: "<angle>";
+      inherits: false;
+      initial-value: 0deg;
     }
 
     body {
@@ -873,13 +885,25 @@ function appCss() {
 
     .scan-orbit {
       --scan-progress: 0deg;
+      --scan-progress-tail: 0deg;
       align-items: center;
       aspect-ratio: 1;
-      background: conic-gradient(#008060 var(--scan-progress), #dfe3e8 0deg);
+      background:
+        conic-gradient(
+          from -90deg,
+          #008060 0deg,
+          #00a47a var(--scan-progress-tail),
+          #9bf4cf var(--scan-progress),
+          #dfe3e8 var(--scan-progress),
+          #dfe3e8 360deg
+        );
       border-radius: 50%;
       display: grid;
       justify-items: center;
       position: relative;
+      transition:
+        --scan-progress 720ms cubic-bezier(0.65, 0, 0.35, 1),
+        --scan-progress-tail 720ms cubic-bezier(0.65, 0, 0.35, 1);
       width: 220px;
     }
 
@@ -893,17 +917,18 @@ function appCss() {
     }
 
     .scan-spinner {
-      animation: scan-spin 1.2s linear infinite;
       border-radius: 50%;
       inset: 0;
       position: absolute;
+      transform: rotate(var(--scan-progress));
+      transition: transform 720ms cubic-bezier(0.65, 0, 0.35, 1);
     }
 
     .scan-spinner::after {
-      background: #008060;
+      background: radial-gradient(circle at 35% 35%, #ffffff 0 12%, #baf8dc 13% 34%, #00a47a 35% 100%);
       border: 3px solid #fff;
       border-radius: 50%;
-      box-shadow: 0 2px 8px rgba(0, 128, 96, 0.35);
+      box-shadow: 0 2px 12px rgba(0, 128, 96, 0.4);
       content: "";
       height: 14px;
       left: calc(50% - 10px);
@@ -934,16 +959,6 @@ function appCss() {
       font-size: 0.875rem;
       font-weight: 650;
       line-height: 1.25;
-    }
-
-    @keyframes scan-spin {
-      from {
-        transform: rotate(0deg);
-      }
-
-      to {
-        transform: rotate(360deg);
-      }
     }
 
     @media (max-width: 860px) {
@@ -1172,12 +1187,17 @@ function clientScript() {
 
     function updateScanOverlay(progress, message, detail) {
       const orbit = document.getElementById("scan-orbit");
+      const clampedProgress = Math.max(0, Math.min(progress, 100));
+      const angle = clampedProgress * 3.6;
+      const headFade = Math.min(42, Math.max(14, angle * 0.18));
+      const tailAngle = Math.max(0, angle - headFade);
 
       if (orbit) {
-        orbit.style.setProperty("--scan-progress", Math.max(0, Math.min(progress, 100)) * 3.6 + "deg");
+        orbit.style.setProperty("--scan-progress", angle + "deg");
+        orbit.style.setProperty("--scan-progress-tail", tailAngle + "deg");
       }
 
-      setText("scan-progress", Math.max(0, Math.min(progress, 100)) + "%");
+      setText("scan-progress", clampedProgress + "%");
       setText("scan-message", message);
       setText("scan-detail", detail);
     }
