@@ -1,5 +1,6 @@
 import http from "node:http";
-import { config, scopeLabel } from "./config.js";
+import { aiScanningConfigured, enhanceScanResultsWithAi, summarizeAiStatus } from "./ai.js";
+import { config } from "./config.js";
 import {
   databaseConfigured,
   getScanSummary,
@@ -101,33 +102,9 @@ function renderAppSurface(url) {
   const page = pageForPath(url.pathname);
   const shop = normalizeShop(url.searchParams.get("shop") || "");
   const host = url.searchParams.get("host") || "";
-  const embedded = url.searchParams.get("embedded") === "1";
-  const hasShopifyContext = Boolean(shop || host || embedded);
   const shopLabel = shop || (host ? "Shopify admin context detected" : "No store context");
   const currentSearch = url.search || "";
   const nav = (path) => `${path}${currentSearch}`;
-  const publicUrl = config.appUrl || "Not configured";
-  const missingApiKey = config.apiKey
-    ? ""
-    : `<div class="notice notice-warning">
-        <strong>Shopify API key missing.</strong>
-        Set <code>SHOPIFY_API_KEY</code> in Railway so App Bridge can initialize inside Shopify admin.
-      </div>`;
-  const missingBackendConfig = config.apiSecret && config.databaseUrl && config.sessionSecret
-    ? ""
-    : `<div class="notice notice-warning">
-        <strong>Backend auth is not fully configured.</strong>
-        Set <code>SHOPIFY_API_SECRET</code>, <code>DATABASE_URL</code>, and <code>SESSION_SECRET</code> for token exchange and scanner APIs.
-      </div>`;
-  const adminContextNotice = hasShopifyContext
-    ? `<div class="notice notice-success">
-        <strong>Admin context active.</strong>
-        This surface was opened with Shopify install context for <code>${escapeHtml(shopLabel)}</code>.
-      </div>`
-    : `<div class="notice">
-        <strong>Standalone preview.</strong>
-        Install and open the app from Shopify admin to pass store context and session tokens into this surface.
-      </div>`;
 
   return `<!doctype html>
 <html lang="en">
@@ -162,17 +139,13 @@ function renderAppSurface(url) {
             <button class="button button-primary" type="button" onclick="scanVisibleProducts()">Run scan</button>
           </div>
         </div>
-        ${missingApiKey}
-        ${missingBackendConfig}
-        ${adminContextNotice}
-        <div id="app-status" class="notice">Waiting for Shopify session token.</div>
+        <div id="app-status" class="notice notice-hidden" role="status"></div>
         ${renderPageBody(page.id, {
-          hasShopifyContext,
-          shopLabel,
-          publicUrl
+          shopLabel
         })}
       </div>
     </main>
+    ${renderScanOverlay()}
     <script>${clientScript()}</script>
   </body>
 </html>`;
@@ -190,37 +163,41 @@ function renderPageBody(pageId, data) {
   return renderOverviewPage(data);
 }
 
-function renderOverviewPage({ hasShopifyContext, shopLabel }) {
-  const installStatus = hasShopifyContext ? "Connected" : "Preview";
-  const installClass = hasShopifyContext ? "badge-success" : "badge-muted";
-  const setupStatus = hasShopifyContext ? "status-done" : "status-waiting";
-
+function renderOverviewPage() {
   return `<div class="grid grid-metrics">
       <section class="panel metric">
-        <h2>Store</h2>
-        <span class="metric-value" id="metric-store">${escapeHtml(installStatus)}</span>
-        <p class="metric-label" id="metric-shop">${escapeHtml(shopLabel)}</p>
-      </section>
-      <section class="panel metric">
-        <h2>Scanned products</h2>
+        <h2>Scanned</h2>
         <span class="metric-value" id="metric-scanned">0</span>
-        <p class="metric-label">Saved scanner records</p>
+        <p class="metric-label">Products reviewed</p>
       </section>
       <section class="panel metric">
         <h2>Ready</h2>
         <span class="metric-value" id="metric-ready">0</span>
-        <p class="metric-label">Products with no blocking findings</p>
+        <p class="metric-label">No blocking findings</p>
+      </section>
+      <section class="panel metric">
+        <h2>Needs review</h2>
+        <span class="metric-value" id="metric-attention">0</span>
+        <p class="metric-label">Products to complete</p>
       </section>
       <section class="panel metric">
         <h2>Blocked</h2>
         <span class="metric-value" id="metric-blocked">0</span>
-        <p class="metric-label">Products missing customs essentials</p>
+        <p class="metric-label">Missing customs essentials</p>
       </section>
     </div>
 
-    <div class="grid grid-main" style="margin-top: 16px;">
-      <section class="panel">
-        <h2>Recent scanner results</h2>
+    <section class="panel panel-offset">
+      <div class="section-heading">
+        <div>
+          <h2>Recent product reviews</h2>
+          <p>Saved results from your latest customs readiness scans.</p>
+        </div>
+        <div class="actions">
+          <button class="button" type="button" onclick="openProductPicker()">Pick products</button>
+          <button class="button button-primary" type="button" onclick="scanVisibleProducts()">Run scan</button>
+        </div>
+      </div>
         <table class="table" aria-label="Recent scanner results">
           <thead>
             <tr>
@@ -234,47 +211,19 @@ function renderOverviewPage({ hasShopifyContext, shopLabel }) {
             <tr><td colspan="4"><p>No scanner results saved yet.</p></td></tr>
           </tbody>
         </table>
-      </section>
-
-      <aside class="panel">
-        <h2>Setup</h2>
-        <div class="stack">
-          <div class="task">
-            <span class="status-dot ${setupStatus}" id="status-auth">${hasShopifyContext ? "✓" : "1"}</span>
-            <div>
-              <h3>Authenticate embedded app</h3>
-              <p>The frontend requests a Shopify App Bridge session token and the backend verifies it.</p>
-            </div>
-          </div>
-          <div class="task">
-            <span class="status-dot status-waiting" id="status-token">2</span>
-            <div>
-              <h3>Exchange token</h3>
-              <p>The backend exchanges the session token for an offline Admin API token and stores it encrypted.</p>
-            </div>
-          </div>
-          <div class="task">
-            <span class="status-dot status-waiting" id="status-scan">3</span>
-            <div>
-              <h3>Run scanner</h3>
-              <p>Scanner results are written to Shopify product metafields and stored in Postgres.</p>
-            </div>
-          </div>
-        </div>
-      </aside>
-    </div>`;
+    </section>`;
 }
 
 function renderProductsPage() {
   return `<section class="panel">
     <div class="section-heading">
       <div>
-        <h2>Product readiness</h2>
-        <p>Reads products through the Admin API, scores customs readiness, and writes results to product metafields.</p>
+        <h2>Customs readiness</h2>
+        <p>Review product data before cross-border selling. Scans check Shopify fields and add AI-assisted recommendations when available.</p>
       </div>
       <div class="actions">
         <button class="button" type="button" onclick="loadProducts()">Refresh</button>
-        <button class="button button-primary" type="button" onclick="scanVisibleProducts()">Scan visible</button>
+        <button class="button button-primary" type="button" onclick="scanVisibleProducts()">Scan listed products</button>
       </div>
     </div>
     <table class="table" aria-label="Product readiness">
@@ -288,42 +237,71 @@ function renderProductsPage() {
         </tr>
       </thead>
       <tbody id="products-tbody">
-        <tr><td colspan="5"><p>Waiting for authenticated product read.</p></td></tr>
+        <tr><td colspan="5"><p>Products will appear here after loading.</p></td></tr>
       </tbody>
     </table>
   </section>`;
 }
 
-function renderSettingsPage({ shopLabel, publicUrl }) {
+function renderSettingsPage({ shopLabel }) {
+  const aiStatus = aiScanningConfigured() ? "Enabled" : "Off";
+  const aiClass = aiScanningConfigured() ? "badge-success" : "badge-muted";
+
   return `<section class="panel">
-    <h2>App configuration</h2>
-    <dl class="definition-list">
+    <div class="section-heading">
       <div>
-        <dt>Store context</dt>
-        <dd id="settings-shop">${escapeHtml(shopLabel)}</dd>
+        <h2>Scan coverage</h2>
+        <p>Current checks used when reviewing products for EU customs readiness.</p>
       </div>
-      <div>
-        <dt>Public URL</dt>
-        <dd><code>${escapeHtml(publicUrl)}</code></dd>
+      <span class="badge ${aiClass}" id="settings-ai">AI review ${aiStatus}</span>
+    </div>
+    <div class="coverage-grid">
+      <div class="coverage-item">
+        <span class="coverage-icon">1</span>
+        <div>
+          <h3>Product details</h3>
+          <p>Vendor and product type are checked for classification context.</p>
+        </div>
       </div>
-      <div>
-        <dt>Admin API version</dt>
-        <dd><code>${escapeHtml(config.apiVersion)}</code></dd>
+      <div class="coverage-item">
+        <span class="coverage-icon">2</span>
+        <div>
+          <h3>Variant identifiers</h3>
+          <p>SKUs and barcodes are reviewed for traceability and warehouse matching.</p>
+        </div>
       </div>
-      <div>
-        <dt>Scopes</dt>
-        <dd><code>${escapeHtml(scopeLabel())}</code></dd>
+      <div class="coverage-item">
+        <span class="coverage-icon">3</span>
+        <div>
+          <h3>Customs data</h3>
+          <p>HS codes and country of origin are checked on shipping-required variants.</p>
+        </div>
       </div>
-      <div>
-        <dt>Database</dt>
-        <dd id="settings-db">${databaseConfigured() ? "Configured" : "Missing DATABASE_URL"}</dd>
+      <div class="coverage-item">
+        <span class="coverage-icon">4</span>
+        <div>
+          <h3>Saved results</h3>
+          <p>Readiness status, score, scan date, and findings are saved back to products.</p>
+        </div>
       </div>
-      <div>
-        <dt>Install mode</dt>
-        <dd>Embedded Shopify admin surface using App Bridge session tokens and token exchange.</dd>
-      </div>
-    </dl>
+    </div>
+    <p class="muted-note" id="settings-shop">Connected store: ${escapeHtml(shopLabel)}</p>
   </section>`;
+}
+
+function renderScanOverlay() {
+  return `<div class="scan-overlay" id="scan-overlay" hidden>
+    <div class="scan-dialog" role="status" aria-live="polite">
+      <div class="scan-orbit" id="scan-orbit" style="--scan-progress: 0deg;">
+        <div class="scan-spinner"></div>
+        <div class="scan-core">
+          <strong id="scan-progress">0%</strong>
+          <span id="scan-message">Preparing scan</span>
+        </div>
+      </div>
+      <p id="scan-detail">Checking product data.</p>
+    </div>
+  </div>`;
 }
 
 function pageForPath(pathname) {
@@ -331,7 +309,7 @@ function pageForPath(pathname) {
     return {
       id: "products",
       title: "Products",
-      description: "Read, scan, and write compliance status to Shopify products."
+      description: "Check product data and save customs readiness results."
     };
   }
 
@@ -339,14 +317,14 @@ function pageForPath(pathname) {
     return {
       id: "settings",
       title: "Settings",
-      description: "Current Shopify app configuration and installation context."
+      description: "Review what each scan checks."
     };
   }
 
   return {
     id: "overview",
     title: config.appName,
-    description: "Installed app home for EU product compliance and customs readiness."
+    description: "Track EU customs readiness across your product catalogue."
   };
 }
 
@@ -365,6 +343,7 @@ async function handleApi(req, res, url) {
         installed: auth.session.installed,
         lastSeenAt: auth.session.lastSeenAt
       },
+      aiConfigured: aiScanningConfigured(),
       summary: mapSummary(summary),
       recentResults
     });
@@ -383,6 +362,7 @@ async function handleApi(req, res, url) {
     sendJson(res, 200, {
       ok: true,
       shop: auth.shop,
+      aiConfigured: aiScanningConfigured(),
       products: productsResponse.products,
       readiness: scan.results,
       pageInfo: productsResponse.pageInfo
@@ -412,24 +392,27 @@ async function handleApi(req, res, url) {
     const products = productIds.length > 0
       ? await fetchProductsByIds(auth.session, productIds)
       : (await fetchProducts(auth.session, { first: Number.parseInt(body.limit || "25", 10) })).products;
-    const scan = scanProducts(products);
+    const ruleScan = scanProducts(products);
+    const scanResults = await enhanceScanResultsWithAi(ruleScan.results);
+    const aiStatus = summarizeAiStatus(scanResults);
     let writeResult = {
       metafieldsWritten: 0
     };
 
-    if (writeMetafields && scan.results.length > 0) {
-      writeResult = await writeComplianceMetafields(auth.session, scan.results);
+    if (writeMetafields && scanResults.length > 0) {
+      writeResult = await writeComplianceMetafields(auth.session, scanResults);
     }
 
-    if (scan.results.length > 0) {
-      await saveScanResults(auth.shop, scan.results);
+    if (scanResults.length > 0) {
+      await saveScanResults(auth.shop, scanResults);
     }
 
     sendJson(res, 200, {
       ok: true,
       shop: auth.shop,
-      summary: scan.summary,
-      results: scan.results,
+      aiStatus,
+      summary: ruleScan.summary,
+      results: scanResults,
       writeResult
     });
     return true;
@@ -685,6 +668,11 @@ function appCss() {
       background: #1a1a1a;
     }
 
+    .button:disabled {
+      cursor: wait;
+      opacity: 0.7;
+    }
+
     .grid {
       display: grid;
       gap: 16px;
@@ -694,17 +682,16 @@ function appCss() {
       grid-template-columns: repeat(4, minmax(0, 1fr));
     }
 
-    .grid-main {
-      align-items: start;
-      grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
-    }
-
     .panel {
       background: #fff;
       border: 1px solid #e3e3e3;
       border-radius: 8px;
       box-shadow: 0 1px 0 rgba(0, 0, 0, 0.04);
       padding: 16px;
+    }
+
+    .panel-offset {
+      margin-top: 16px;
     }
 
     .metric {
@@ -752,39 +739,8 @@ function appCss() {
       border-color: #e0b3b2;
     }
 
-    .stack {
-      display: grid;
-      gap: 16px;
-    }
-
-    .task {
-      display: grid;
-      gap: 10px;
-      grid-template-columns: 24px minmax(0, 1fr);
-    }
-
-    .status-dot {
-      align-items: center;
-      background: #f1f1f1;
-      border: 1px solid #c9c9c9;
-      border-radius: 50%;
-      color: #303030;
-      display: inline-flex;
-      font-size: 0.75rem;
-      font-weight: 650;
-      height: 22px;
-      justify-content: center;
-      width: 22px;
-    }
-
-    .status-done {
-      background: #008060;
-      border-color: #008060;
-      color: #fff;
-    }
-
-    .status-waiting {
-      background: #fff;
+    .notice-hidden {
+      display: none;
     }
 
     .table {
@@ -842,29 +798,152 @@ function appCss() {
       background: #f7f7f7;
     }
 
-    .definition-list {
+    .coverage-grid {
       display: grid;
-      gap: 12px;
-      margin: 0;
+      gap: 14px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
-    .definition-list div {
+    .coverage-item {
+      align-items: start;
+      display: grid;
+      gap: 12px;
+      grid-template-columns: 28px minmax(0, 1fr);
+    }
+
+    .coverage-icon {
+      align-items: center;
+      background: #eaf8f2;
+      border: 1px solid #a5d8bd;
+      border-radius: 50%;
+      color: #006c4f;
+      display: inline-flex;
+      font-size: 0.75rem;
+      font-weight: 650;
+      height: 26px;
+      justify-content: center;
+      width: 26px;
+    }
+
+    .muted-note {
+      border-top: 1px solid #e3e3e3;
+      margin-top: 16px;
+      padding-top: 12px;
+    }
+
+    .finding-list {
       display: grid;
       gap: 4px;
     }
 
-    .definition-list dt {
-      color: #616161;
-      font-size: 0.75rem;
+    .finding-source {
+      color: #006c4f;
       font-weight: 650;
-      margin: 0;
-      text-transform: uppercase;
     }
 
-    .definition-list dd {
+    .scan-overlay {
+      align-items: center;
+      backdrop-filter: blur(6px);
+      background: rgba(246, 246, 247, 0.86);
+      display: grid;
+      inset: 0;
+      justify-items: center;
+      position: fixed;
+      z-index: 1000;
+    }
+
+    .scan-overlay[hidden] {
+      display: none;
+    }
+
+    .scan-dialog {
+      align-items: center;
+      background: #fff;
+      border: 1px solid #d4d4d4;
+      border-radius: 8px;
+      box-shadow: 0 18px 54px rgba(0, 0, 0, 0.18);
+      display: grid;
+      gap: 18px;
+      justify-items: center;
+      max-width: min(360px, calc(100vw - 32px));
+      padding: 28px;
+      text-align: center;
+      width: 100%;
+    }
+
+    .scan-orbit {
+      --scan-progress: 0deg;
+      align-items: center;
+      aspect-ratio: 1;
+      background: conic-gradient(#008060 var(--scan-progress), #dfe3e8 0deg);
+      border-radius: 50%;
+      display: grid;
+      justify-items: center;
+      position: relative;
+      width: 220px;
+    }
+
+    .scan-orbit::before {
+      background: #fff;
+      border-radius: 50%;
+      box-shadow: inset 0 0 0 1px #e3e3e3;
+      content: "";
+      inset: 14px;
+      position: absolute;
+    }
+
+    .scan-spinner {
+      animation: scan-spin 1.2s linear infinite;
+      border-radius: 50%;
+      inset: 0;
+      position: absolute;
+    }
+
+    .scan-spinner::after {
+      background: #008060;
+      border: 3px solid #fff;
+      border-radius: 50%;
+      box-shadow: 0 2px 8px rgba(0, 128, 96, 0.35);
+      content: "";
+      height: 14px;
+      left: calc(50% - 10px);
+      position: absolute;
+      top: -2px;
+      width: 14px;
+    }
+
+    .scan-core {
+      align-items: center;
+      display: grid;
+      gap: 8px;
+      justify-items: center;
+      max-width: 140px;
+      position: relative;
+      z-index: 1;
+    }
+
+    .scan-core strong {
+      color: #202223;
+      font-size: 2rem;
+      font-weight: 700;
+      line-height: 1;
+    }
+
+    .scan-core span {
+      color: #303030;
       font-size: 0.875rem;
-      margin: 0;
-      overflow-wrap: anywhere;
+      font-weight: 650;
+      line-height: 1.25;
+    }
+
+    @keyframes scan-spin {
+      from {
+        transform: rotate(0deg);
+      }
+
+      to {
+        transform: rotate(360deg);
+      }
     }
 
     @media (max-width: 860px) {
@@ -877,9 +956,16 @@ function appCss() {
         display: grid;
       }
 
-      .grid-metrics,
-      .grid-main {
+      .grid-metrics {
         grid-template-columns: 1fr;
+      }
+
+      .coverage-grid {
+        grid-template-columns: 1fr;
+      }
+
+      .scan-orbit {
+        width: 190px;
       }
     }
   `;
@@ -890,7 +976,9 @@ function clientScript() {
     const state = {
       page: document.body.dataset.page,
       products: [],
-      selectedProductIds: []
+      selectedProductIds: [],
+      scanTimer: null,
+      scanProgress: 0
     };
 
     document.addEventListener("DOMContentLoaded", () => {
@@ -900,16 +988,12 @@ function clientScript() {
     async function bootstrap() {
       const data = await apiFetch("/api/session");
 
-      setStatus("Authenticated with Shopify session token. Offline Admin API session is stored.", "success");
-      setText("metric-store", "Connected");
-      setText("metric-shop", data.shop || "Connected store");
       setText("metric-scanned", data.summary?.scannedProducts ?? 0);
       setText("metric-ready", data.summary?.readyProducts ?? 0);
+      setText("metric-attention", data.summary?.needsAttentionProducts ?? 0);
       setText("metric-blocked", data.summary?.blockedProducts ?? 0);
-      setText("settings-shop", data.shop || "Connected store");
-      setText("settings-db", "Configured and reachable");
-      markStep("status-auth");
-      markStep("status-token");
+      setText("settings-shop", "Connected store: " + (data.shop || "Shopify admin"));
+      setText("settings-ai", "AI review " + (data.aiConfigured ? "Enabled" : "Off"));
       renderRecentResults(data.recentResults || []);
 
       if (state.page === "products") {
@@ -1003,7 +1087,8 @@ function clientScript() {
     }
 
     async function runScan(productIds) {
-      setStatus("Scanning products and writing compliance metafields...", "warning");
+      setStatus("");
+      showScanOverlay(productIds.length || state.products.length || 25);
 
       try {
         const data = await apiFetch("/api/scan-products", {
@@ -1014,10 +1099,9 @@ function clientScript() {
           })
         });
 
-        markStep("status-scan");
-        setStatus("Scan complete. Wrote " + data.writeResult.metafieldsWritten + " Shopify metafields.", "success");
         setText("metric-scanned", data.summary?.scannedProducts ?? productIds.length);
         setText("metric-ready", data.summary?.readyProducts ?? 0);
+        setText("metric-attention", data.summary?.needsAttentionProducts ?? 0);
         setText("metric-blocked", data.summary?.blockedProducts ?? 0);
         renderProducts(data.results || []);
         renderRecentResults((data.results || []).map((result) => ({
@@ -1028,9 +1112,80 @@ function clientScript() {
           findings: result.findings,
           scannedAt: result.scannedAt
         })));
+        hideScanOverlay(true);
+        showToast("Scan complete. Reviewed " + (data.results || []).length + " products.");
       } catch (error) {
+        hideScanOverlay(false);
         setStatus(error.message, "critical");
       }
+    }
+
+    function showScanOverlay(totalProducts) {
+      const overlay = document.getElementById("scan-overlay");
+
+      if (!overlay) {
+        return;
+      }
+
+      const messages = [
+        "Collecting product data",
+        "Checking variant identifiers",
+        "Reviewing HS code coverage",
+        "Assessing origin data",
+        "Running AI customs review",
+        "Preparing product updates"
+      ];
+
+      state.scanProgress = 3;
+      overlay.hidden = false;
+      setActionButtonsDisabled(true);
+      updateScanOverlay(state.scanProgress, messages[0], "Reviewing " + totalProducts + " product" + (totalProducts === 1 ? "" : "s") + ".");
+      clearInterval(state.scanTimer);
+      state.scanTimer = setInterval(() => {
+        const nextProgress = Math.min(92, state.scanProgress + 5 + Math.round(Math.random() * 8));
+        const messageIndex = Math.min(messages.length - 1, Math.floor(nextProgress / 17));
+        state.scanProgress = nextProgress;
+        updateScanOverlay(
+          state.scanProgress,
+          messages[messageIndex],
+          "Scanning product records and compliance fields."
+        );
+      }, 850);
+    }
+
+    function hideScanOverlay(success) {
+      const overlay = document.getElementById("scan-overlay");
+
+      clearInterval(state.scanTimer);
+      state.scanTimer = null;
+      setActionButtonsDisabled(false);
+
+      if (!overlay) {
+        return;
+      }
+
+      updateScanOverlay(success ? 100 : 0, success ? "Scan complete" : "Scan stopped", success ? "Results are ready to review." : "The scan could not be completed.");
+      window.setTimeout(() => {
+        overlay.hidden = true;
+      }, success ? 500 : 250);
+    }
+
+    function updateScanOverlay(progress, message, detail) {
+      const orbit = document.getElementById("scan-orbit");
+
+      if (orbit) {
+        orbit.style.setProperty("--scan-progress", Math.max(0, Math.min(progress, 100)) * 3.6 + "deg");
+      }
+
+      setText("scan-progress", Math.max(0, Math.min(progress, 100)) + "%");
+      setText("scan-message", message);
+      setText("scan-detail", detail);
+    }
+
+    function setActionButtonsDisabled(disabled) {
+      document.querySelectorAll("button").forEach((button) => {
+        button.disabled = disabled;
+      });
     }
 
     function renderProducts(results) {
@@ -1052,7 +1207,7 @@ function clientScript() {
           '<td>' + escapeHtml(String((product.variants || []).length)) + '</td>' +
           '<td>' + statusBadge(result.status) + '</td>' +
           '<td>' + escapeHtml(String(result.score)) + '</td>' +
-          '<td>' + renderFindings(result.findings) + '</td>' +
+          '<td>' + renderFindings(result.findings, result.aiReview) + '</td>' +
         '</tr>';
       }).join("");
     }
@@ -1077,14 +1232,17 @@ function clientScript() {
       '</tr>').join("");
     }
 
-    function renderFindings(findings) {
+    function renderFindings(findings, aiReview = null) {
       if (!findings || findings.length === 0) {
-        return '<span class="badge badge-success">No findings</span>';
+        const aiSummary = aiReview?.summary ? '<p><span class="finding-source">AI</span> ' + escapeHtml(aiReview.summary) + '</p>' : "";
+        return '<span class="badge badge-success">No findings</span>' + aiSummary;
       }
 
-      return findings.slice(0, 3).map((finding) =>
-        '<p><strong>' + escapeHtml(finding.severity) + ':</strong> ' + escapeHtml(finding.message) + '</p>'
-      ).join("") + (findings.length > 3 ? '<p>+' + (findings.length - 3) + ' more</p>' : '');
+      const aiSummary = aiReview?.summary ? '<p><span class="finding-source">AI</span> ' + escapeHtml(aiReview.summary) + '</p>' : "";
+      return '<div class="finding-list">' + aiSummary + findings.slice(0, 4).map((finding) => {
+        const source = finding.source === "ai" ? '<span class="finding-source">AI</span> ' : "";
+        return '<p>' + source + '<strong>' + escapeHtml(finding.severity) + ':</strong> ' + escapeHtml(finding.message) + '</p>';
+      }).join("") + (findings.length > 4 ? '<p>+' + (findings.length - 4) + ' more</p>' : '') + '</div>';
     }
 
     function statusBadge(status) {
@@ -1103,6 +1261,12 @@ function clientScript() {
         return;
       }
 
+      if (!message) {
+        el.className = "notice notice-hidden";
+        el.textContent = "";
+        return;
+      }
+
       el.className = "notice" + (tone ? " notice-" + tone : "");
       el.textContent = message;
     }
@@ -1112,15 +1276,6 @@ function clientScript() {
 
       if (el) {
         el.textContent = value;
-      }
-    }
-
-    function markStep(id) {
-      const el = document.getElementById(id);
-
-      if (el) {
-        el.classList.add("status-done");
-        el.textContent = "✓";
       }
     }
 

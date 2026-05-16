@@ -9,7 +9,7 @@
   "scripts": {
     "start": "node src/server.js",
     "check": "npm run check:syntax && npm test",
-    "check:syntax": "node --check src/config.js && node --check src/security.js && node --check src/database.js && node --check src/scanner.js && node --check src/shopify.js && node --check src/server.js",
+    "check:syntax": "node --check src/config.js && node --check src/security.js && node --check src/database.js && node --check src/scanner.js && node --check src/ai.js && node --check src/shopify.js && node --check src/server.js",
     "test": "node --test"
   },
   "dependencies": {

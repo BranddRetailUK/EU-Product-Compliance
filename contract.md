@@ -4,22 +4,22 @@ This file is the source of truth for the app and repository behavior that curren
 
 ## Project Context
 
-The repository is for a Shopify app currently intended to become an EU Product Compliance + Customs Readiness Scanner. The app deploys as a Node.js HTTP service with an embedded Shopify admin App Home, backend Shopify session-token authentication, token exchange, Postgres-backed shop sessions, product reads/writes through the Shopify Admin GraphQL API, and initial scanner rules.
+The repository is for a Shopify app currently intended to become an EU Product Compliance + Customs Readiness Scanner. The app deploys as a Node.js HTTP service with an embedded Shopify admin App Home, backend Shopify session-token authentication, token exchange, Postgres-backed shop sessions, product reads/writes through the Shopify Admin GraphQL API, scanner rules, and optional AI-assisted review.
 
 ## Implemented Application Functionality
 
 The application currently implements an HTTP server in `src/server.js`.
 
-- `GET /`: Returns the Shopify App Home overview surface. It includes Shopify App Bridge and Polaris CDN scripts, configures the App Bridge API key from `SHOPIFY_API_KEY`, and renders an admin-style dashboard for installed-store context.
-- `GET /products`: Returns the embedded products surface. It reads product data through authenticated backend API routes, displays scanner readiness, supports Shopify's resource picker, and can trigger product scans.
-- `GET /settings`: Returns the embedded settings surface showing current public URL, API version, configured scopes, and store context.
+- `GET /`: Returns the Shopify App Home overview surface. It includes Shopify App Bridge and Polaris CDN scripts, configures the App Bridge API key from `SHOPIFY_API_KEY`, and renders merchant-facing readiness metrics plus recent product reviews.
+- `GET /products`: Returns the embedded products surface. It reads product data through authenticated backend API routes, displays scanner readiness, supports Shopify's resource picker, and can trigger product scans with a modal scan progress overlay.
+- `GET /settings`: Returns the embedded settings surface showing merchant-facing scan coverage and whether AI review is enabled.
 - `GET /health`: Returns JSON health status for hosting checks.
 - `GET /auth`: Validates the `shop` query parameter and redirects valid shops to their Shopify admin apps area. It does not perform OAuth.
 - `GET /auth/callback`: Returns a `501` JSON response because authorization-code callback handling has not been implemented. The current app surface expects Shopify managed installation.
-- `GET /api/session`: Requires a Shopify App Bridge session token, verifies the token, performs token exchange when needed, stores the shop offline Admin API token encrypted in Postgres, and returns session plus scanner summary data.
+- `GET /api/session`: Requires a Shopify App Bridge session token, verifies the token, performs token exchange when needed, stores the shop offline Admin API token encrypted in Postgres, and returns session, AI availability, and scanner summary data.
 - `GET /api/products`: Requires a verified session token and stored shop session, reads products from Shopify Admin GraphQL, and returns products with computed readiness results.
 - `GET /api/scans`: Requires a verified session token and returns saved scanner results from Postgres.
-- `POST /api/scan-products`: Requires a verified session token, reads selected or recent products from Shopify, applies scanner rules, writes compliance metafields back to Shopify products, and stores scan results in Postgres.
+- `POST /api/scan-products`: Requires a verified session token, reads selected or recent products from Shopify, applies scanner rules, optionally adds AI-assisted advisory recommendations, writes compliance metafields back to Shopify products, and stores scan results in Postgres.
 - `POST /webhooks/app/uninstalled`: Verifies the Shopify webhook HMAC and marks the shop session as uninstalled in Postgres.
 - All other routes return a `404` JSON response.
 
@@ -36,6 +36,8 @@ Scanner rules currently inspect products and shipping-required variants for:
 - Missing variant HS code.
 - Missing variant country of origin.
 - Missing variant barcode.
+
+When `OPENAI_API_KEY` is configured, product scans also send compact product and findings data to the OpenAI Responses API using structured JSON output. AI output is treated as advisory: it can append AI-sourced recommendations to findings and add an `aiReview` object to API responses, but the deterministic readiness status and score are still calculated by local scanner rules.
 
 Scanner results produce a readiness status of `ready`, `needs_attention`, or `blocked`, plus a numeric score. Product scan writes use product metafields under the `eu_product_compliance` namespace:
 
@@ -58,9 +60,11 @@ There are currently no background jobs or Shopify extensions implemented.
 - `src/config.js`: Central environment configuration.
 - `src/database.js`: Postgres schema initialization, encrypted shop session storage, uninstall marking, and scanner result persistence.
 - `src/scanner.js`: Product compliance/customs readiness scanner rules.
+- `src/ai.js`: Optional OpenAI Responses API integration for advisory customs readiness recommendations.
 - `src/security.js`: Shopify session-token verification, webhook HMAC verification, shop-domain validation, and access-token encryption helpers.
 - `src/shopify.js`: Shopify token exchange, Admin GraphQL product reads, and compliance metafield writes.
 - `src/server.js`: Built-in Node HTTP server, App Home renderer, API routes, and webhook route.
+- `test/ai.test.js`: AI enhancement fallback tests.
 - `test/scanner.test.js`: Scanner behavior tests.
 - `test/security.test.js`: Session-token verification tests.
 
@@ -75,22 +79,23 @@ The environment configuration surface currently includes placeholders for:
 - Local app URL and server settings.
 - Database connection.
 - Session/security secret.
-- Optional AI-assisted classification.
+- Optional AI-assisted classification and model selection.
 - Optional managed billing plan identifiers.
 
 The current HTTP runtime reads:
 
 - `PORT`: Chooses the listening port.
-- `APP_URL` or `SHOPIFY_APP_URL`: Displays the configured public URL in the app surface.
 - `SHOPIFY_API_KEY`: Populates the App Bridge API key meta tag.
 - `SHOPIFY_API_SECRET`: Verifies Shopify session tokens, performs token exchange, and verifies Shopify webhook HMACs.
-- `SHOPIFY_API_VERSION`: Displays the configured Admin API version.
-- `SCOPES`: Displays the configured Admin API scopes.
+- `SHOPIFY_API_VERSION`: Selects the Shopify Admin API version used for GraphQL calls.
+- `SCOPES`: Defines the Admin API scopes expected on stored Shopify sessions.
 - `DATABASE_URL`: Connects to Postgres for shop sessions and scanner results.
 - `PGSSLMODE`: When set to `require`, enables Postgres SSL with relaxed certificate verification for managed hosting.
 - `SESSION_SECRET`: Encrypts stored Shopify offline access tokens.
+- `OPENAI_API_KEY`: Enables optional server-side AI review during product scans.
+- `OPENAI_MODEL`: Selects the OpenAI model for optional AI review and defaults to `gpt-4o-mini`.
 
-The app still defines placeholders for optional AI-assisted classification and optional Shopify managed billing plan identifiers, but no runtime code consumes those values yet.
+The app still defines placeholders for optional Shopify managed billing plan identifiers, but no runtime code consumes those billing values yet.
 
 ## Database Schema
 
