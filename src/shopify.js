@@ -236,10 +236,10 @@ const PRODUCT_FIELDS_FRAGMENT = `
         title
         sku
         barcode
-        requiresShipping
         inventoryItem {
           id
           tracked
+          requiresShipping
           harmonizedSystemCode
           countryCodeOfOrigin
         }

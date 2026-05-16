@@ -15,9 +15,9 @@ test("scanner blocks shipping variants without HS code and country of origin", (
         title: "Small",
         sku: "HD-S",
         barcode: "123",
-        requiresShipping: true,
         inventoryItem: {
           id: "gid://shopify/InventoryItem/1",
+          requiresShipping: true,
           harmonizedSystemCode: "",
           countryCodeOfOrigin: ""
         }
@@ -44,9 +44,9 @@ test("scanner marks fully populated physical products as ready", () => {
         title: "Default",
         sku: "TOTE-1",
         barcode: "456",
-        requiresShipping: true,
         inventoryItem: {
           id: "gid://shopify/InventoryItem/2",
+          requiresShipping: true,
           harmonizedSystemCode: "420292",
           countryCodeOfOrigin: "GB"
         }

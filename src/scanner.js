@@ -17,7 +17,7 @@ export function scanProducts(products) {
 export function scanProduct(product) {
   const findings = [];
   const variants = product.variants || [];
-  const shippingVariants = variants.filter((variant) => variant.requiresShipping !== false);
+  const shippingVariants = variants.filter((variant) => variant.inventoryItem?.requiresShipping !== false);
 
   const addFinding = (severity, code, message, target, remediation) => {
     findings.push({
@@ -136,11 +136,11 @@ export function compactProduct(product) {
       title: variant.title || "",
       sku: variant.sku || "",
       barcode: variant.barcode || "",
-      requiresShipping: variant.requiresShipping,
       inventoryItem: variant.inventoryItem
         ? {
             id: variant.inventoryItem.id,
             tracked: variant.inventoryItem.tracked,
+            requiresShipping: variant.inventoryItem.requiresShipping,
             harmonizedSystemCode: variant.inventoryItem.harmonizedSystemCode || "",
             countryCodeOfOrigin: variant.inventoryItem.countryCodeOfOrigin || ""
           }

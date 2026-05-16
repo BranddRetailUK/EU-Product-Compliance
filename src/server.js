@@ -936,7 +936,7 @@ function clientScript() {
       const payload = await response.json().catch(() => ({}));
 
       if (!response.ok || payload.ok === false) {
-        throw new Error(payload.error || "Request failed.");
+        throw new Error(formatApiError(payload));
       }
 
       return payload;
@@ -1140,6 +1140,23 @@ function clientScript() {
         .replaceAll(">", "&gt;")
         .replaceAll('"', "&quot;")
         .replaceAll("'", "&#39;");
+    }
+
+    function formatApiError(payload) {
+      const base = payload.error || "Request failed.";
+      const graphQlErrors = payload.details && Array.isArray(payload.details.errors)
+        ? payload.details.errors.map((error) => error.message).filter(Boolean)
+        : [];
+
+      if (graphQlErrors.length > 0) {
+        return base + " " + graphQlErrors.join(" ");
+      }
+
+      if (Array.isArray(payload.details) && payload.details.length > 0) {
+        return base + " " + payload.details.map((detail) => detail.message || detail.code).filter(Boolean).join(" ");
+      }
+
+      return base;
     }
   `;
 }
