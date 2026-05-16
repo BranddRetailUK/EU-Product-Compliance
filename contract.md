@@ -4,18 +4,21 @@ This file is the source of truth for the app and repository behavior that curren
 
 ## Project Context
 
-The repository is for a Shopify app currently intended to become an EU Product Compliance + Customs Readiness Scanner. A minimal Node.js HTTP runtime exists so the service can deploy and expose placeholder status endpoints while the Shopify app implementation is still pending.
+The repository is for a Shopify app currently intended to become an EU Product Compliance + Customs Readiness Scanner. A minimal Node.js HTTP runtime exists so the service can deploy and expose an embedded Shopify admin app surface while the scanner implementation is still pending.
 
 ## Implemented Application Functionality
 
 The application currently implements a minimal HTTP server in `src/server.js`.
 
-- `GET /`: Returns a simple HTML service status page.
+- `GET /`: Returns the Shopify App Home overview surface. It includes Shopify App Bridge and Polaris CDN scripts, configures the App Bridge API key from `SHOPIFY_API_KEY`, and renders an admin-style dashboard for installed-store context.
+- `GET /products`: Returns the embedded products surface. It includes a product-picker action that works when the page is opened inside Shopify admin.
+- `GET /settings`: Returns the embedded settings surface showing current public URL, API version, configured scopes, and store context.
 - `GET /health`: Returns JSON health status for hosting checks.
-- `GET /auth/callback`: Returns a `501` JSON response because Shopify OAuth callback handling has not been implemented yet.
+- `GET /auth`: Validates the `shop` query parameter and redirects valid shops to their Shopify admin apps area. It does not perform OAuth.
+- `GET /auth/callback`: Returns a `501` JSON response because authorization-code callback handling has not been implemented. The current app surface expects Shopify managed installation.
 - All other routes return a `404` JSON response.
 
-There are currently no Shopify API integrations, OAuth/session flows, database models, background jobs, webhooks, Shopify extensions, scanners, or compliance business rules implemented in this repository.
+The HTTP runtime sets a Content Security Policy that permits embedding in Shopify admin and `*.myshopify.com` frames. There are currently no backend Shopify API integrations, OAuth/session-token validation, token exchange flows, database models, background jobs, webhooks, Shopify extensions, scanners, or compliance business rules implemented in this repository.
 
 ## Repository Files
 
@@ -42,7 +45,13 @@ The environment configuration surface currently includes placeholders for:
 - Optional AI-assisted classification.
 - Optional managed billing plan identifiers.
 
-The current HTTP runtime reads `PORT` to choose the listening port and reads `APP_URL` or `SHOPIFY_APP_URL` only to display the configured public URL on the placeholder status page.
+The current HTTP runtime reads:
+
+- `PORT`: Chooses the listening port.
+- `APP_URL` or `SHOPIFY_APP_URL`: Displays the configured public URL in the app surface.
+- `SHOPIFY_API_KEY`: Populates the App Bridge API key meta tag.
+- `SHOPIFY_API_VERSION`: Displays the configured Admin API version.
+- `SCOPES`: Displays the configured Admin API scopes.
 
 ## Runtime And Dependencies
 
