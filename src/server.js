@@ -440,7 +440,9 @@ async function handleApi(req, res, url) {
       ? await fetchProductsByIds(auth.session, productIds)
       : (await fetchProducts(auth.session, { first: Number.parseInt(body.limit || "25", 10) })).products;
     const ruleScan = scanProducts(products);
-    const aiFixStatus = await suggestProductFixesWithAi(ruleScan.results);
+    const aiFixStatus = await suggestProductFixesWithAi(ruleScan.results, {
+      timeoutMs: 12_000
+    });
     const fixPlan = buildProductFixPlan(ruleScan.results, {
       defaultProductVendor: config.defaultProductVendor,
       defaultProductType: config.defaultProductType,
@@ -467,8 +469,12 @@ async function handleApi(req, res, url) {
       ? await fetchProductsByIds(auth.session, productIds.length > 0 ? productIds : fixedProductIds)
       : products;
     const refreshedScan = scanProducts(refreshedProducts);
-    const scanResults = await enhanceScanResultsWithAi(refreshedScan.results);
-    const aiStatus = summarizeAiStatus(scanResults);
+    const scanResults = refreshedScan.results;
+    const aiStatus = {
+      configured: aiScanningConfigured(),
+      status: "not_run",
+      reviewedProducts: 0
+    };
     const writeResult = scanResults.length > 0
       ? await writeComplianceMetafields(auth.session, scanResults)
       : { metafieldsWritten: 0 };
@@ -1251,6 +1257,9 @@ function clientScript() {
     async function apiFetch(path, options = {}) {
       const token = await getSessionToken();
       const headers = new Headers(options.headers || {});
+      const timeoutMs = options.timeoutMs ?? 60_000;
+      const controller = new AbortController();
+      const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
 
       if (!headers.has("content-type") && options.body) {
         headers.set("content-type", "application/json");
@@ -1260,17 +1269,33 @@ function clientScript() {
         headers.set("authorization", "Bearer " + token);
       }
 
-      const response = await fetch(path, {
-        ...options,
-        headers
-      });
-      const payload = await response.json().catch(() => ({}));
+      const {
+        timeoutMs: _timeoutMs,
+        ...fetchOptions
+      } = options;
 
-      if (!response.ok || payload.ok === false) {
-        throw new Error(formatApiError(payload));
+      try {
+        const response = await fetch(path, {
+          ...fetchOptions,
+          headers,
+          signal: controller.signal
+        });
+        const payload = await response.json().catch(() => ({}));
+
+        if (!response.ok || payload.ok === false) {
+          throw new Error(formatApiError(payload));
+        }
+
+        return payload;
+      } catch (error) {
+        if (error.name === "AbortError") {
+          throw new Error("Request timed out. The update may still be finishing; refresh or run the scan again in a moment.");
+        }
+
+        throw error;
+      } finally {
+        window.clearTimeout(timeout);
       }
-
-      return payload;
     }
 
     async function getSessionToken() {
@@ -1350,6 +1375,7 @@ function clientScript() {
       try {
         const data = await apiFetch("/api/fix-issues", {
           method: "POST",
+          timeoutMs: 75_000,
           body: JSON.stringify({
             productIds
           })

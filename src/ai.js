@@ -122,7 +122,7 @@ export async function enhanceScanResultsWithAi(results) {
   }
 }
 
-export async function suggestProductFixesWithAi(results) {
+export async function suggestProductFixesWithAi(results, { timeoutMs = 12_000 } = {}) {
   if (!aiProductFixesConfigured() || results.length === 0) {
     return {
       enabled: aiProductFixesConfigured(),
@@ -132,7 +132,7 @@ export async function suggestProductFixesWithAi(results) {
   }
 
   try {
-    const aiResponse = await requestAiFixSuggestions(results);
+    const aiResponse = await requestAiFixSuggestions(results, { timeoutMs });
 
     return {
       enabled: true,
@@ -169,9 +169,9 @@ export function summarizeAiStatus(results) {
   };
 }
 
-async function requestAiFixSuggestions(results) {
+async function requestAiFixSuggestions(results, { timeoutMs }) {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 25_000);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
 
   try {
     const response = await fetch("https://api.openai.com/v1/responses", {
