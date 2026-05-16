@@ -230,6 +230,27 @@ const PRODUCT_FIELDS_FRAGMENT = `
     tags
     totalInventory
     updatedAt
+    media(first: 1, sortKey: POSITION) {
+      nodes {
+        alt
+        preview {
+          image {
+            url
+            altText
+            width
+            height
+          }
+        }
+        ... on MediaImage {
+          image {
+            url
+            altText
+            width
+            height
+          }
+        }
+      }
+    }
     variants(first: 50) {
       nodes {
         id

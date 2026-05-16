@@ -1,4 +1,5 @@
 import { config } from "./config.js";
+import { sortFindingsBySeverity } from "./scanner.js";
 
 const AI_SCAN_SCHEMA = {
   type: "object",
@@ -209,7 +210,7 @@ function mergeAiReview(results, reviews) {
 
     return {
       ...result,
-      findings: [...result.findings, ...aiFindings],
+      findings: sortFindingsBySeverity([...result.findings, ...aiFindings]),
       aiReview: {
         enabled: true,
         status: "complete",

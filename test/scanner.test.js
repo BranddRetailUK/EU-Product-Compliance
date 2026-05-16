@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { scanProduct } from "../src/scanner.js";
+import { compactProduct, scanProduct } from "../src/scanner.js";
 
 test("scanner blocks shipping variants without HS code and country of origin", () => {
   const result = scanProduct({
@@ -57,4 +57,72 @@ test("scanner marks fully populated physical products as ready", () => {
   assert.equal(result.status, "ready");
   assert.equal(result.score, 100);
   assert.deepEqual(result.findings, []);
+});
+
+test("scanner orders findings by high, medium, then low priority", () => {
+  const result = scanProduct({
+    id: "gid://shopify/Product/3",
+    title: "Sticker Pack",
+    handle: "sticker-pack",
+    vendor: "",
+    productType: "",
+    variants: [
+      {
+        id: "gid://shopify/ProductVariant/3",
+        title: "Default",
+        sku: "",
+        barcode: "",
+        inventoryItem: {
+          id: "gid://shopify/InventoryItem/3",
+          requiresShipping: true,
+          harmonizedSystemCode: "",
+          countryCodeOfOrigin: ""
+        }
+      }
+    ]
+  });
+
+  assert.deepEqual(result.findings.map((finding) => finding.severity), [
+    "high",
+    "high",
+    "medium",
+    "medium",
+    "low",
+    "low"
+  ]);
+});
+
+test("compact product includes the first product media image", () => {
+  const product = compactProduct({
+    id: "gid://shopify/Product/4",
+    title: "Beanie",
+    media: {
+      nodes: [
+        {
+          alt: "Folded black beanie",
+          preview: {
+            image: {
+              url: "https://cdn.shopify.com/beanie.jpg",
+              altText: "",
+              width: 800,
+              height: 800
+            }
+          }
+        }
+      ]
+    },
+    variants: {
+      nodes: []
+    },
+    metafields: {
+      nodes: []
+    }
+  });
+
+  assert.deepEqual(product.image, {
+    url: "https://cdn.shopify.com/beanie.jpg",
+    altText: "Folded black beanie",
+    width: 800,
+    height: 800
+  });
 });

@@ -112,7 +112,7 @@ export function scanProduct(product) {
     product,
     status,
     score,
-    findings,
+    findings: sortFindingsBySeverity(findings),
     scannedAt: new Date().toISOString()
   };
 }
@@ -120,6 +120,7 @@ export function scanProduct(product) {
 export function compactProduct(product) {
   const variants = product.variants?.nodes || product.variants || [];
   const metafields = product.metafields?.nodes || product.metafields || [];
+  const media = product.media?.nodes || product.media || [];
 
   return {
     id: product.id,
@@ -131,6 +132,7 @@ export function compactProduct(product) {
     tags: product.tags || [],
     totalInventory: product.totalInventory ?? null,
     updatedAt: product.updatedAt || null,
+    image: compactProductImage(media[0]),
     variants: variants.map((variant) => ({
       id: variant.id,
       title: variant.title || "",
@@ -153,6 +155,40 @@ export function compactProduct(product) {
       value: metafield.value,
       updatedAt: metafield.updatedAt
     }))
+  };
+}
+
+export function sortFindingsBySeverity(findings) {
+  const priority = {
+    high: 0,
+    medium: 1,
+    low: 2
+  };
+
+  return [...(findings || [])].sort((left, right) => {
+    const leftPriority = priority[left.severity] ?? 3;
+    const rightPriority = priority[right.severity] ?? 3;
+
+    if (leftPriority !== rightPriority) {
+      return leftPriority - rightPriority;
+    }
+
+    return String(left.message || "").localeCompare(String(right.message || ""));
+  });
+}
+
+function compactProductImage(media) {
+  const image = media?.image || media?.preview?.image;
+
+  if (!image?.url) {
+    return null;
+  }
+
+  return {
+    url: image.url,
+    altText: image.altText || media.alt || "",
+    width: image.width ?? null,
+    height: image.height ?? null
   };
 }
 

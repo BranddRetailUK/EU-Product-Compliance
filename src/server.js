@@ -187,6 +187,8 @@ function renderOverviewPage() {
       </section>
     </div>
 
+    ${renderFixIssuesPanel()}
+
     <section class="panel panel-offset">
       <div class="section-heading">
         <div>
@@ -215,7 +217,8 @@ function renderOverviewPage() {
 }
 
 function renderProductsPage() {
-  return `<section class="panel">
+  return `${renderFixIssuesPanel()}
+  <section class="panel">
     <div class="section-heading">
       <div>
         <h2>Customs readiness</h2>
@@ -240,6 +243,19 @@ function renderProductsPage() {
         <tr><td colspan="5"><p>Products will appear here after loading.</p></td></tr>
       </tbody>
     </table>
+  </section>`;
+}
+
+function renderFixIssuesPanel() {
+  return `<section class="panel fix-panel panel-offset">
+    <div>
+      <h2>Fix issues</h2>
+      <p id="fix-issues-summary">Run a scan to review product issues before applying updates.</p>
+    </div>
+    <div class="fix-actions">
+      <span class="badge badge-muted" id="fix-issues-count">0 issues</span>
+      <button class="button button-primary" id="fix-issues-button" type="button" onclick="fixVisibleIssues()" disabled>Fix issues</button>
+    </div>
   </section>`;
 }
 
@@ -281,7 +297,7 @@ function renderSettingsPage({ shopLabel }) {
         <span class="coverage-icon">4</span>
         <div>
           <h3>Saved results</h3>
-          <p>Readiness status, score, scan date, and findings are saved back to products.</p>
+          <p>Scans save readiness results, and product metafields are updated only from Fix issues.</p>
         </div>
       </div>
     </div>
@@ -309,7 +325,7 @@ function pageForPath(pathname) {
     return {
       id: "products",
       title: "Products",
-      description: "Check product data and save customs readiness results."
+      description: "Check product data before applying product updates."
     };
   }
 
@@ -388,20 +404,12 @@ async function handleApi(req, res, url) {
     const auth = await authenticateAdminRequest(req);
     const body = await readJsonBody(req);
     const productIds = Array.isArray(body.productIds) ? body.productIds : [];
-    const writeMetafields = body.writeMetafields !== false;
     const products = productIds.length > 0
       ? await fetchProductsByIds(auth.session, productIds)
       : (await fetchProducts(auth.session, { first: Number.parseInt(body.limit || "25", 10) })).products;
     const ruleScan = scanProducts(products);
     const scanResults = await enhanceScanResultsWithAi(ruleScan.results);
     const aiStatus = summarizeAiStatus(scanResults);
-    let writeResult = {
-      metafieldsWritten: 0
-    };
-
-    if (writeMetafields && scanResults.length > 0) {
-      writeResult = await writeComplianceMetafields(auth.session, scanResults);
-    }
 
     if (scanResults.length > 0) {
       await saveScanResults(auth.shop, scanResults);
@@ -413,7 +421,40 @@ async function handleApi(req, res, url) {
       aiStatus,
       summary: ruleScan.summary,
       results: scanResults,
-      writeResult
+      writeResult: {
+        metafieldsWritten: 0
+      },
+      productUpdatesApplied: false
+    });
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/fix-issues") {
+    const auth = await authenticateAdminRequest(req);
+    const body = await readJsonBody(req);
+    const productIds = Array.isArray(body.productIds) ? body.productIds : [];
+    const products = productIds.length > 0
+      ? await fetchProductsByIds(auth.session, productIds)
+      : (await fetchProducts(auth.session, { first: Number.parseInt(body.limit || "25", 10) })).products;
+    const ruleScan = scanProducts(products);
+    const scanResults = await enhanceScanResultsWithAi(ruleScan.results);
+    const aiStatus = summarizeAiStatus(scanResults);
+    const writeResult = scanResults.length > 0
+      ? await writeComplianceMetafields(auth.session, scanResults)
+      : { metafieldsWritten: 0 };
+
+    if (scanResults.length > 0) {
+      await saveScanResults(auth.shop, scanResults);
+    }
+
+    sendJson(res, 200, {
+      ok: true,
+      shop: auth.shop,
+      aiStatus,
+      summary: ruleScan.summary,
+      results: scanResults,
+      writeResult,
+      productUpdatesApplied: true
     });
     return true;
   }
@@ -776,6 +817,58 @@ function appCss() {
       text-transform: uppercase;
     }
 
+    .table th:last-child,
+    .table td:last-child {
+      width: 48%;
+    }
+
+    .product-cell {
+      align-items: center;
+      display: grid;
+      gap: 12px;
+      grid-template-columns: 54px minmax(0, 1fr);
+      min-width: 230px;
+    }
+
+    .product-thumb {
+      aspect-ratio: 1;
+      background: #f1f2f4;
+      border: 1px solid #d4d4d4;
+      border-radius: 6px;
+      color: #616161;
+      display: block;
+      font-size: 0.75rem;
+      font-weight: 650;
+      height: 54px;
+      line-height: 54px;
+      object-fit: cover;
+      text-align: center;
+      width: 54px;
+    }
+
+    .product-title {
+      color: #202223;
+      display: block;
+      font-weight: 650;
+      line-height: 1.3;
+      overflow-wrap: anywhere;
+    }
+
+    .fix-panel {
+      align-items: center;
+      display: flex;
+      gap: 16px;
+      justify-content: space-between;
+    }
+
+    .fix-actions {
+      align-items: center;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+
     .badge {
       border: 1px solid #c9c9c9;
       border-radius: 999px;
@@ -845,12 +938,93 @@ function appCss() {
 
     .finding-list {
       display: grid;
-      gap: 4px;
+      gap: 6px;
     }
 
     .finding-source {
       color: #006c4f;
       font-weight: 650;
+    }
+
+    .finding-item {
+      align-items: start;
+      display: grid;
+      gap: 8px;
+      grid-template-columns: auto minmax(0, 1fr);
+    }
+
+    .severity-pill {
+      border-radius: 999px;
+      font-size: 0.6875rem;
+      font-weight: 650;
+      line-height: 1;
+      min-width: 48px;
+      padding: 5px 7px;
+      text-align: center;
+      text-transform: uppercase;
+    }
+
+    .severity-high {
+      background: #fff4f4;
+      color: #8e1f0b;
+    }
+
+    .severity-medium {
+      background: #fff8db;
+      color: #5c4100;
+    }
+
+    .severity-low {
+      background: #f1f2f4;
+      color: #616161;
+    }
+
+    .finding-extra {
+      display: grid;
+      gap: 6px;
+    }
+
+    .finding-extra[hidden] {
+      display: none;
+    }
+
+    .finding-toggle {
+      align-items: center;
+      background: linear-gradient(180deg, rgba(255, 255, 255, 0.65), #f7f7f7);
+      border: 1px solid #d4d4d4;
+      border-radius: 6px;
+      color: #303030;
+      cursor: pointer;
+      display: inline-flex;
+      font: inherit;
+      font-size: 0.8125rem;
+      font-weight: 550;
+      gap: 8px;
+      justify-content: space-between;
+      margin-top: 2px;
+      min-height: 30px;
+      padding: 5px 9px;
+      width: fit-content;
+    }
+
+    .finding-toggle:hover {
+      background: #f1f1f1;
+    }
+
+    .finding-chevron {
+      border-bottom: 2px solid currentColor;
+      border-right: 2px solid currentColor;
+      display: inline-block;
+      height: 7px;
+      margin-top: -3px;
+      transform: rotate(45deg);
+      transition: transform 160ms ease;
+      width: 7px;
+    }
+
+    .finding-toggle.is-expanded .finding-chevron {
+      margin-top: 3px;
+      transform: rotate(225deg);
     }
 
     .scan-overlay {
@@ -979,6 +1153,15 @@ function appCss() {
         grid-template-columns: 1fr;
       }
 
+      .fix-panel {
+        align-items: stretch;
+        display: grid;
+      }
+
+      .fix-actions {
+        justify-content: flex-start;
+      }
+
       .scan-orbit {
         width: 190px;
       }
@@ -991,6 +1174,8 @@ function clientScript() {
     const state = {
       page: document.body.dataset.page,
       products: [],
+      currentResults: [],
+      recentResults: [],
       selectedProductIds: [],
       scanTimer: null,
       scanProgress: 0
@@ -1009,7 +1194,14 @@ function clientScript() {
       setText("metric-blocked", data.summary?.blockedProducts ?? 0);
       setText("settings-shop", "Connected store: " + (data.shop || "Shopify admin"));
       setText("settings-ai", "AI review " + (data.aiConfigured ? "Enabled" : "Off"));
-      renderRecentResults(data.recentResults || []);
+      state.recentResults = data.recentResults || [];
+
+      if (state.page !== "products") {
+        state.currentResults = state.recentResults;
+      }
+
+      renderRecentResults(state.recentResults);
+      updateFixPanel();
 
       if (state.page === "products") {
         await loadProducts();
@@ -1061,7 +1253,9 @@ function clientScript() {
       try {
         const data = await apiFetch("/api/products?limit=25");
         state.products = data.products || [];
-        renderProducts(data.readiness || []);
+        state.currentResults = data.readiness || [];
+        renderProducts(state.currentResults);
+        updateFixPanel();
       } catch (error) {
         tbody.innerHTML = '<tr><td colspan="5"><p>' + escapeHtml(error.message) + '</p></td></tr>';
         setStatus(error.message, "critical");
@@ -1101,16 +1295,23 @@ function clientScript() {
       await runScan(state.selectedProductIds);
     }
 
-    async function runScan(productIds) {
+    async function fixVisibleIssues() {
+      const productIds = currentIssueProductIds();
+
+      if (productIds.length === 0) {
+        setStatus("Run a scan with product issues before applying updates.", "warning");
+        updateFixPanel();
+        return;
+      }
+
       setStatus("");
-      showScanOverlay(productIds.length || state.products.length || 25);
+      showScanOverlay(productIds.length, "fix");
 
       try {
-        const data = await apiFetch("/api/scan-products", {
+        const data = await apiFetch("/api/fix-issues", {
           method: "POST",
           body: JSON.stringify({
-            productIds,
-            writeMetafields: true
+            productIds
           })
         });
 
@@ -1118,38 +1319,70 @@ function clientScript() {
         setText("metric-ready", data.summary?.readyProducts ?? 0);
         setText("metric-attention", data.summary?.needsAttentionProducts ?? 0);
         setText("metric-blocked", data.summary?.blockedProducts ?? 0);
-        renderProducts(data.results || []);
-        renderRecentResults((data.results || []).map((result) => ({
-          title: result.product.title,
-          handle: result.product.handle,
-          status: result.status,
-          score: result.score,
-          findings: result.findings,
-          scannedAt: result.scannedAt
-        })));
-        hideScanOverlay(true);
-        showToast("Scan complete. Reviewed " + (data.results || []).length + " products.");
+        state.currentResults = data.results || [];
+        state.recentResults = state.currentResults.map(toRecentResult);
+        renderProducts(state.currentResults);
+        renderRecentResults(state.recentResults);
+        updateFixPanel();
+        hideScanOverlay(true, "fix");
+        showToast("Product updates complete for " + state.currentResults.length + " products.");
       } catch (error) {
-        hideScanOverlay(false);
+        hideScanOverlay(false, "fix");
         setStatus(error.message, "critical");
       }
     }
 
-    function showScanOverlay(totalProducts) {
+    async function runScan(productIds) {
+      setStatus("");
+      showScanOverlay(productIds.length || state.products.length || 25, "scan");
+
+      try {
+        const data = await apiFetch("/api/scan-products", {
+          method: "POST",
+          body: JSON.stringify({
+            productIds
+          })
+        });
+
+        setText("metric-scanned", data.summary?.scannedProducts ?? productIds.length);
+        setText("metric-ready", data.summary?.readyProducts ?? 0);
+        setText("metric-attention", data.summary?.needsAttentionProducts ?? 0);
+        setText("metric-blocked", data.summary?.blockedProducts ?? 0);
+        state.currentResults = data.results || [];
+        state.recentResults = state.currentResults.map(toRecentResult);
+        renderProducts(state.currentResults);
+        renderRecentResults(state.recentResults);
+        updateFixPanel();
+        hideScanOverlay(true, "scan");
+        showToast("Scan complete. Reviewed " + (data.results || []).length + " products.");
+      } catch (error) {
+        hideScanOverlay(false, "scan");
+        setStatus(error.message, "critical");
+      }
+    }
+
+    function showScanOverlay(totalProducts, mode = "scan") {
       const overlay = document.getElementById("scan-overlay");
 
       if (!overlay) {
         return;
       }
 
-      const messages = [
-        "Collecting product data",
-        "Checking variant identifiers",
-        "Reviewing HS code coverage",
-        "Assessing origin data",
-        "Running AI customs review",
-        "Preparing product updates"
-      ];
+      const messages = mode === "fix"
+        ? [
+            "Preparing product updates",
+            "Checking latest product data",
+            "Writing compliance metafields",
+            "Saving readiness results"
+          ]
+        : [
+            "Collecting product data",
+            "Checking variant identifiers",
+            "Reviewing HS code coverage",
+            "Assessing origin data",
+            "Running AI customs review",
+            "Preparing issue report"
+          ];
 
       state.scanProgress = 3;
       overlay.hidden = false;
@@ -1163,12 +1396,12 @@ function clientScript() {
         updateScanOverlay(
           state.scanProgress,
           messages[messageIndex],
-          "Scanning product records and compliance fields."
+          mode === "fix" ? "Applying product updates." : "Scanning product records and compliance fields."
         );
       }, 850);
     }
 
-    function hideScanOverlay(success) {
+    function hideScanOverlay(success, mode = "scan") {
       const overlay = document.getElementById("scan-overlay");
 
       clearInterval(state.scanTimer);
@@ -1179,7 +1412,11 @@ function clientScript() {
         return;
       }
 
-      updateScanOverlay(success ? 100 : 0, success ? "Scan complete" : "Scan stopped", success ? "Results are ready to review." : "The scan could not be completed.");
+      updateScanOverlay(
+        success ? 100 : 0,
+        success ? (mode === "fix" ? "Updates complete" : "Scan complete") : (mode === "fix" ? "Updates stopped" : "Scan stopped"),
+        success ? (mode === "fix" ? "Product updates are complete." : "Results are ready to review.") : "The request could not be completed."
+      );
       window.setTimeout(() => {
         overlay.hidden = true;
       }, success ? 500 : 250);
@@ -1204,8 +1441,19 @@ function clientScript() {
 
     function setActionButtonsDisabled(disabled) {
       document.querySelectorAll("button").forEach((button) => {
-        button.disabled = disabled;
+        if (disabled) {
+          button.dataset.wasDisabled = button.disabled ? "true" : "false";
+          button.disabled = true;
+          return;
+        }
+
+        button.disabled = button.dataset.wasDisabled === "true";
+        delete button.dataset.wasDisabled;
       });
+
+      if (!disabled) {
+        updateFixPanel();
+      }
     }
 
     function renderProducts(results) {
@@ -1220,14 +1468,14 @@ function clientScript() {
         return;
       }
 
-      tbody.innerHTML = results.map((result) => {
+      tbody.innerHTML = results.map((result, index) => {
         const product = result.product;
         return '<tr>' +
-          '<td><strong>' + escapeHtml(product.title || "Untitled product") + '</strong><br><p>' + escapeHtml(product.handle || product.id) + '</p></td>' +
+          '<td>' + renderProductCell(product) + '</td>' +
           '<td>' + escapeHtml(String((product.variants || []).length)) + '</td>' +
           '<td>' + statusBadge(result.status) + '</td>' +
           '<td>' + escapeHtml(String(result.score)) + '</td>' +
-          '<td>' + renderFindings(result.findings, result.aiReview) + '</td>' +
+          '<td>' + renderFindings(result.findings, result.aiReview, "product-" + index) + '</td>' +
         '</tr>';
       }).join("");
     }
@@ -1244,25 +1492,171 @@ function clientScript() {
         return;
       }
 
-      tbody.innerHTML = results.map((result) => '<tr>' +
-        '<td><strong>' + escapeHtml(result.title || result.product?.title || "Untitled product") + '</strong><br><p>' + escapeHtml(result.handle || result.product?.handle || "") + '</p></td>' +
+      tbody.innerHTML = results.map((result, index) => '<tr>' +
+        '<td>' + renderProductCell(normalizeResultProduct(result)) + '</td>' +
         '<td>' + statusBadge(result.status) + '</td>' +
         '<td>' + escapeHtml(String(result.score)) + '</td>' +
-        '<td>' + renderFindings(result.findings || []) + '</td>' +
+        '<td>' + renderFindings(result.findings || [], result.aiReview, "recent-" + index) + '</td>' +
       '</tr>').join("");
     }
 
-    function renderFindings(findings, aiReview = null) {
-      if (!findings || findings.length === 0) {
+    function renderFindings(findings, aiReview = null, idSuffix = "findings") {
+      const sortedFindings = sortFindings(findings || []);
+
+      if (sortedFindings.length === 0) {
         const aiSummary = aiReview?.summary ? '<p><span class="finding-source">AI</span> ' + escapeHtml(aiReview.summary) + '</p>' : "";
         return '<span class="badge badge-success">No findings</span>' + aiSummary;
       }
 
       const aiSummary = aiReview?.summary ? '<p><span class="finding-source">AI</span> ' + escapeHtml(aiReview.summary) + '</p>' : "";
-      return '<div class="finding-list">' + aiSummary + findings.slice(0, 4).map((finding) => {
-        const source = finding.source === "ai" ? '<span class="finding-source">AI</span> ' : "";
-        return '<p>' + source + '<strong>' + escapeHtml(finding.severity) + ':</strong> ' + escapeHtml(finding.message) + '</p>';
-      }).join("") + (findings.length > 4 ? '<p>+' + (findings.length - 4) + ' more</p>' : '') + '</div>';
+      const visibleFindings = sortedFindings.slice(0, 3);
+      const extraFindings = sortedFindings.slice(3);
+      const extraId = "finding-extra-" + idSuffix;
+      const toggle = extraFindings.length > 0
+        ? '<button class="finding-toggle" type="button" onclick="toggleFindings(this)" aria-expanded="false" aria-controls="' + escapeHtml(extraId) + '" data-more-label="Show ' + extraFindings.length + ' more issue' + (extraFindings.length === 1 ? "" : "s") + '" data-less-label="Show fewer issues"><span class="toggle-label">Show ' + extraFindings.length + ' more issue' + (extraFindings.length === 1 ? "" : "s") + '</span><span class="finding-chevron" aria-hidden="true"></span></button>' +
+          '<div class="finding-extra" id="' + escapeHtml(extraId) + '" hidden>' + extraFindings.map(renderFindingItem).join("") + '</div>'
+        : "";
+
+      return '<div class="finding-list">' + aiSummary + visibleFindings.map(renderFindingItem).join("") + toggle + '</div>';
+    }
+
+    function renderFindingItem(finding) {
+      const severity = normalizeSeverity(finding.severity);
+      const source = finding.source === "ai" ? '<span class="finding-source">AI</span> ' : "";
+      return '<div class="finding-item">' +
+        '<span class="severity-pill severity-' + escapeHtml(severity) + '">' + escapeHtml(severity) + '</span>' +
+        '<p>' + source + escapeHtml(finding.message || "") + '</p>' +
+      '</div>';
+    }
+
+    function renderProductCell(product) {
+      const title = product.title || "Untitled product";
+      const detail = product.handle || product.id || "";
+
+      return '<div class="product-cell">' +
+        renderProductThumbnail(product) +
+        '<div><span class="product-title">' + escapeHtml(title) + '</span><p>' + escapeHtml(detail) + '</p></div>' +
+      '</div>';
+    }
+
+    function renderProductThumbnail(product) {
+      const image = product.image || null;
+
+      if (image?.url) {
+        const altText = image.altText || product.title || "";
+        return '<img class="product-thumb" src="' + escapeHtml(image.url) + '" alt="' + escapeHtml(altText) + '" loading="lazy">';
+      }
+
+      return '<span class="product-thumb" aria-hidden="true">' + escapeHtml(productInitial(product.title)) + '</span>';
+    }
+
+    function normalizeResultProduct(result) {
+      const product = result.product || {};
+
+      return {
+        id: product.id || result.productId || "",
+        title: product.title || result.title || "Untitled product",
+        handle: product.handle || result.handle || "",
+        image: product.image || result.image || null,
+        variants: product.variants || []
+      };
+    }
+
+    function toRecentResult(result) {
+      return {
+        productId: result.product?.id || result.productId || "",
+        title: result.product?.title || result.title || "Untitled product",
+        handle: result.product?.handle || result.handle || "",
+        image: result.product?.image || result.image || null,
+        status: result.status,
+        score: result.score,
+        findings: result.findings,
+        aiReview: result.aiReview,
+        scannedAt: result.scannedAt
+      };
+    }
+
+    function productInitial(title) {
+      const trimmed = String(title || "").trim();
+      return trimmed ? trimmed.slice(0, 1).toUpperCase() : "?";
+    }
+
+    function sortFindings(findings) {
+      const priority = {
+        high: 0,
+        medium: 1,
+        low: 2
+      };
+
+      return [...(findings || [])].sort((left, right) => {
+        const leftPriority = priority[normalizeSeverity(left.severity)] ?? 3;
+        const rightPriority = priority[normalizeSeverity(right.severity)] ?? 3;
+
+        if (leftPriority !== rightPriority) {
+          return leftPriority - rightPriority;
+        }
+
+        return String(left.message || "").localeCompare(String(right.message || ""));
+      });
+    }
+
+    function normalizeSeverity(severity) {
+      return ["high", "medium", "low"].includes(severity) ? severity : "low";
+    }
+
+    function toggleFindings(button) {
+      const targetId = button.getAttribute("aria-controls");
+      const target = targetId ? document.getElementById(targetId) : null;
+      const expanded = button.getAttribute("aria-expanded") === "true";
+      const nextExpanded = !expanded;
+      const label = button.querySelector(".toggle-label");
+
+      if (!target) {
+        return;
+      }
+
+      target.hidden = !nextExpanded;
+      button.setAttribute("aria-expanded", String(nextExpanded));
+      button.classList.toggle("is-expanded", nextExpanded);
+
+      if (label) {
+        label.textContent = nextExpanded ? button.dataset.lessLabel : button.dataset.moreLabel;
+      }
+    }
+
+    function updateFixPanel() {
+      const button = document.getElementById("fix-issues-button");
+      const count = document.getElementById("fix-issues-count");
+      const summary = document.getElementById("fix-issues-summary");
+      const issueResults = currentIssueResults();
+      const issueCount = issueResults.reduce((total, result) => total + ((result.findings || []).length), 0);
+      const productCount = issueResults.length;
+
+      setText("fix-issues-count", issueCount + " issue" + (issueCount === 1 ? "" : "s"));
+
+      if (summary) {
+        summary.textContent = issueCount > 0
+          ? issueCount + " issue" + (issueCount === 1 ? "" : "s") + " across " + productCount + " product" + (productCount === 1 ? "" : "s") + "."
+          : "Run a scan to review product issues before applying updates.";
+      }
+
+      if (count) {
+        count.className = "badge " + (issueCount > 0 ? "badge-warning" : "badge-muted");
+      }
+
+      if (button && !button.dataset.wasDisabled) {
+        button.disabled = issueCount === 0;
+      }
+    }
+
+    function currentIssueResults() {
+      return (state.currentResults || []).filter((result) => (result.findings || []).length > 0);
+    }
+
+    function currentIssueProductIds() {
+      return currentIssueResults()
+        .map((result) => result.product?.id || result.productId)
+        .filter(Boolean);
     }
 
     function statusBadge(status) {

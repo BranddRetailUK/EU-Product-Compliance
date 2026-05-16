@@ -192,7 +192,7 @@ export async function listScanResults(shop, limit = 25) {
   const normalizedShop = normalizeShop(shop);
   const db = await ensureDatabase();
   const result = await db.query(
-    `SELECT product_id, product_title, product_handle, readiness_status, readiness_score, findings, scanned_at
+    `SELECT product_id, product_title, product_handle, readiness_status, readiness_score, findings, product_snapshot, scanned_at
        FROM product_scan_results
       WHERE shop = $1
       ORDER BY scanned_at DESC
@@ -207,6 +207,7 @@ export async function listScanResults(shop, limit = 25) {
     status: row.readiness_status,
     score: row.readiness_score,
     findings: row.findings || [],
+    image: row.product_snapshot?.image || null,
     scannedAt: row.scanned_at
   }));
 }
